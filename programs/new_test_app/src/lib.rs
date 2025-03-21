@@ -1,10 +1,9 @@
 use anchor_lang::prelude::*;
-use mpl_bubblegum::instructions::MintV1CpiBuilder;
 use mpl_bubblegum::types::{MetadataArgs, TokenProgramVersion, TokenStandard, Creator, Collection};
 use mpl_bubblegum::instructions::MintV1InstructionArgs;
 use mpl_bubblegum::instructions::MintV1CpiAccounts;
 use mpl_bubblegum::instructions::MintV1Cpi;
-use solana_program::pubkey::Pubkey;
+use anchor_lang::solana_program::pubkey::Pubkey;
 
 
 declare_id!("4Cu1DNPbgnDmCMCpBrgGuGhTJMfwoeWJXqPizDNTZesU");
