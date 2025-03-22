@@ -1,3 +1,4 @@
+#![allow(unexpected_cfgs)]
 use anchor_lang::prelude::*;
 use mpl_bubblegum::types::{MetadataArgs, TokenProgramVersion, TokenStandard, Creator, Collection};
 use mpl_bubblegum::instructions::MintV1InstructionArgs;
@@ -81,16 +82,18 @@ pub mod new_test_App {
         // Step 3: Initialize PDA with the new cNFT address
         let pda_data = &mut ctx.accounts.pda_purchases;
         pda_data.owner = cnft_address; // Use the cNFT address as the owner
-        pda_data.data = [0; 100]; // Initialize data
+        //let num_bytes = (collection_size + 7) / 8; // Round up to the nearest byte
+        let num_bytes = 16;// Temporal, we need to fetch this size from the collection
+        pda_data.data = vec![0; num_bytes as usize]; // Initialize the bitmask with zeros
     
         Ok(())
     }
     
 
     // Fetch the data stored in the PDA
-    pub fn fetch_data(ctx: Context<FetchData>) -> Result<[u8; 100]> {
+    pub fn fetch_data(ctx: Context<FetchData>) -> Result<Vec<u8>> {
         let pda_data = &ctx.accounts.pda_purchases;
-        Ok(pda_data.data)
+        Ok(pda_data.data.clone()) // Return a clone of the Vec<u8>
     }
 
     // New function: Add a purchase (modify PDA data)
@@ -128,9 +131,11 @@ pub struct MintAndInitializeCNFT<'info> {
     #[account(address = spl_noop::id())]
     pub log_wrapper: AccountInfo<'info>,
     
+    /// CHECK: Compression program
     #[account(address = mpl_bubblegum::ID)]
     pub compression_program: AccountInfo<'info>,
     
+    /// CHECK: Bubblegum program
     #[account(address = mpl_bubblegum::ID)]
     pub bubblegum_program: AccountInfo<'info>,
 
@@ -138,11 +143,14 @@ pub struct MintAndInitializeCNFT<'info> {
     #[account(
         init,
         payer = payer,
-        space = 8 + 32 + 100,
+        space = 8 + 32 + 4 + 100,//num_bytes,
         seeds = [b"purchases", leaf_owner.key().as_ref()],
         bump
     )]
     pub pda_purchases: Account<'info, PDAPurchases>,
+
+    /// CHECK: This account is only used for deriving the PDA and is not read or written to.
+    pub collection_address: AccountInfo<'info>,
 }
 
 // Fetch PDA data
@@ -166,5 +174,5 @@ pub struct AddPurchase<'info> {
 #[account]
 pub struct PDAPurchases {
     pub owner: Pubkey,
-    pub data: [u8; 100],
+    pub data: Vec<u8>,
 }
