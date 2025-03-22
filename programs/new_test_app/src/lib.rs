@@ -3,8 +3,8 @@ use mpl_bubblegum::types::{MetadataArgs, TokenProgramVersion, TokenStandard, Cre
 use mpl_bubblegum::instructions::MintV1InstructionArgs;
 use mpl_bubblegum::instructions::MintV1CpiAccounts;
 use mpl_bubblegum::instructions::MintV1Cpi;
+use mpl_bubblegum::utils::get_asset_id;
 use anchor_lang::solana_program::pubkey::Pubkey;
-
 
 declare_id!("4Cu1DNPbgnDmCMCpBrgGuGhTJMfwoeWJXqPizDNTZesU");
 
@@ -13,13 +13,79 @@ pub mod new_test_App {
     use super::*;
     
 
-    // Initialize the PDA with an owner (CNFT Address)
-    pub fn initialize(ctx: Context<Initialize>, cnft_address: Pubkey) -> Result<()> {
+    pub fn mint_and_initialize_cnft(
+        ctx: Context<MintAndInitializeCNFT>,
+        collection_key: Pubkey,
+        collection_verified: bool,
+    ) -> Result<()> {
+        // Step 1: Mint cNFT using the accounts from ctx
+        let payer = &ctx.accounts.payer.to_account_info();
+        let tree_config = &ctx.accounts.tree_config.to_account_info();
+        let leaf_owner = &ctx.accounts.leaf_owner.to_account_info();
+        let leaf_delegate = &ctx.accounts.leaf_delegate.to_account_info();
+        let merkle_tree = &ctx.accounts.merkle_tree.to_account_info();
+        let system_program = &ctx.accounts.system_program.to_account_info();
+        let log_wrapper = &ctx.accounts.log_wrapper.to_account_info();
+        let compression_program = &ctx.accounts.compression_program.to_account_info();
+        let bubblegum_program = &ctx.accounts.bubblegum_program.to_account_info();
+    
+        // Define metadata for the cNFT
+        let metadata = MetadataArgs {
+            name: "My NFT".to_string(),
+            symbol: "NFT".to_string(),
+            uri: "https://example.com/nft/metadata.json".to_string(),
+            seller_fee_basis_points: 500, // 5% royalty
+            creators: vec![
+                Creator {
+                    address: ctx.accounts.payer.key(),
+                    verified: true,
+                    share: 100,
+                },
+            ],
+            primary_sale_happened: false,
+            is_mutable: true,
+            edition_nonce: Some(1),
+            token_standard: Some(TokenStandard::NonFungible),
+            collection: Some(Collection {
+                verified: collection_verified,
+                key: collection_key,
+            }),
+            uses: None,
+            token_program_version: TokenProgramVersion::Original,
+        };
+    
+        // Mint the cNFT
+        let cpi_mint = MintV1Cpi::new(
+            bubblegum_program,
+            MintV1CpiAccounts {
+                compression_program,
+                leaf_delegate,
+                leaf_owner,
+                log_wrapper,
+                merkle_tree,
+                payer,
+                system_program,
+                tree_config,
+                tree_creator_or_delegate: leaf_delegate,
+            },
+            MintV1InstructionArgs { metadata },
+        );
+    
+        cpi_mint.invoke()?;
+    
+        // Step 2: Derive the cNFT address
+        let merkle_tree_key = merkle_tree.key();
+        let leaf_index = 0; // Replace with the actual leaf index of the newly minted cNFT
+        let cnft_address = get_asset_id(&merkle_tree_key, leaf_index);
+    
+        // Step 3: Initialize PDA with the new cNFT address
         let pda_data = &mut ctx.accounts.pda_purchases;
-        pda_data.owner = cnft_address;
-        pda_data.data = [0; 100]; // Allocate 100 bytes
+        pda_data.owner = cnft_address; // Use the cNFT address as the owner
+        pda_data.data = [0; 100]; // Initialize data
+    
         Ok(())
     }
+    
 
     // Fetch the data stored in the PDA
     pub fn fetch_data(ctx: Context<FetchData>) -> Result<[u8; 100]> {
@@ -39,95 +105,16 @@ pub mod new_test_App {
     }
 }
 
-fn mint_cnft(ctx: Context<MintCNFT>, collection_key: Pubkey, collection_verified: bool) -> Result<()> {
-    let payer = &ctx.accounts.payer.to_account_info();
-    let tree_config = &ctx.accounts.tree_config.to_account_info();
-    let leaf_owner = &ctx.accounts.leaf_owner.to_account_info();
-    let leaf_delegate = &ctx.accounts.leaf_delegate.to_account_info();
-    let merkle_tree = &ctx.accounts.merkle_tree.to_account_info();
-    let system_program = &ctx.accounts.system_program.to_account_info();
-    let log_wrapper = &ctx.accounts.log_wrapper.to_account_info();
-    let compression_program = &ctx.accounts.compression_program.to_account_info();
-    let bubblegum_program = &ctx.accounts.bubblegum_program.to_account_info();
-
-    let metadata = MetadataArgs {
-        name: "My NFT".to_string(),
-        symbol: "NFT".to_string(),
-        uri: "https://example.com/nft/metadata.json".to_string(),
-        seller_fee_basis_points: 500, // 5% royalty
-        creators: vec![
-            Creator {
-                address: ctx.accounts.payer.key(),
-                verified: true,
-                share: 100,
-            },
-        ],
-        primary_sale_happened: false,
-        is_mutable: true,
-        edition_nonce: Some(1),
-        token_standard: Some(TokenStandard::NonFungible),
-        collection: Some(Collection {
-            verified: collection_verified,
-            key: collection_key,
-        }),
-        uses: None,
-        token_program_version: TokenProgramVersion::Original
-    };
-
-    let cpi_mint = MintV1Cpi::new(
-        bubblegum_program,
-        MintV1CpiAccounts {
-            compression_program: compression_program,
-            leaf_delegate: leaf_delegate,
-            leaf_owner: leaf_owner,
-            log_wrapper: log_wrapper,
-            merkle_tree: merkle_tree,
-            payer: payer,
-            system_program: system_program,
-            tree_config: tree_config,
-            tree_creator_or_delegate: leaf_delegate,
-        },
-        MintV1InstructionArgs { metadata },
-    );
-
-    cpi_mint.invoke();
-
-    Ok(())
-}
-
-// Initialize PDA with the CNFT address
 #[derive(Accounts)]
-pub struct Initialize<'info> {
-    #[account(
-        init,
-        payer = user,
-        space = 8 + 32 + 100, // Discriminator + owner (32 bytes) + data (100 bytes)
-        seeds = [b"purchases", cnft_address.key().as_ref()], 
-        bump
-    )]
-    //#[account(address = BUBBLEGUM_PROGRAM_ID)] // Use the Bubblegum program ID
-
-    pub pda_purchases: Account<'info, PDAPurchases>,
-    
-    #[account(mut)]
-    pub user: Signer<'info>,
-
-    pub system_program: Program<'info, System>,
-
-    /// CHECK: This is the cNFT address the PDA is linked to, no validation needed.
-    pub cnft_address: AccountInfo<'info>,
-}
-
-#[derive(Accounts)]
-pub struct MintCNFT<'info> {
+pub struct MintAndInitializeCNFT<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
-
+    
     /// CHECK: Verified via CPI
     pub tree_config: AccountInfo<'info>,
     
     /// CHECK: Verified via CPI
-    pub leaf_owner: AccountInfo<'info>,
+    pub leaf_owner: AccountInfo<'info>, // This will be the NFT address
     
     /// CHECK: Verified via CPI
     pub leaf_delegate: AccountInfo<'info>,
@@ -136,18 +123,26 @@ pub struct MintCNFT<'info> {
     pub merkle_tree: AccountInfo<'info>,
     
     pub system_program: Program<'info, System>,
-
-    /// CHECK: Log wrapper program
+    
+    /// CHECK: Log wrapper program, no validation needed as it's a known program.
     #[account(address = spl_noop::id())]
     pub log_wrapper: AccountInfo<'info>,
-
-    /// CHECK: Compression program
+    
     #[account(address = mpl_bubblegum::ID)]
     pub compression_program: AccountInfo<'info>,
-
-    /// CHECK: Bubblegum program
+    
     #[account(address = mpl_bubblegum::ID)]
     pub bubblegum_program: AccountInfo<'info>,
+
+    // PDA Initialization
+    #[account(
+        init,
+        payer = payer,
+        space = 8 + 32 + 100,
+        seeds = [b"purchases", leaf_owner.key().as_ref()],
+        bump
+    )]
+    pub pda_purchases: Account<'info, PDAPurchases>,
 }
 
 // Fetch PDA data
