@@ -6,7 +6,7 @@ use mpl_bubblegum::types::MetadataArgs;
 declare_id!("4Cu1DNPbgnDmCMCpBrgGuGhTJMfwoeWJXqPizDNTZesU");
 
 #[program]
-pub mod new_test_App {
+pub mod collection_purchases {
     use super::*;
 
     // Function to mint a cNFT

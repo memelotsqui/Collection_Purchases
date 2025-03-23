@@ -7,7 +7,7 @@ use spl_associated_token_account::ID as associated_token_program;
 declare_id!("4Cu1DNPbgnDmCMCpBrgGuGhTJMfwoeWJXqPizDNTZesU");
 
 #[program]
-pub mod new_test_App {
+pub mod collection_purchases {
     use super::*;
 
     // Function to purchase items

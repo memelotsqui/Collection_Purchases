@@ -1,4 +1,5 @@
 #![allow(unexpected_cfgs)]
+const MAX_COLLECTION_SIZE: i32 = 2000;
 use anchor_lang::prelude::*;
 use mpl_bubblegum::types::{MetadataArgs, TokenProgramVersion, TokenStandard, Creator, Collection};
 use mpl_bubblegum::instructions::MintV1InstructionArgs;
@@ -6,11 +7,12 @@ use mpl_bubblegum::instructions::MintV1CpiAccounts;
 use mpl_bubblegum::instructions::MintV1Cpi;
 use mpl_bubblegum::utils::get_asset_id;
 use anchor_lang::solana_program::pubkey::Pubkey;
+use anchor_lang::solana_program::{system_instruction, sysvar::Sysvar};
 
 declare_id!("4Cu1DNPbgnDmCMCpBrgGuGhTJMfwoeWJXqPizDNTZesU");
 
 #[program]
-pub mod new_test_App {
+pub mod collection_purchases {
     use super::*;
     
 
@@ -19,6 +21,66 @@ pub mod new_test_App {
         collection_key: Pubkey,
         collection_verified: bool,
     ) -> Result<()> {
+
+        let collection_size = 40;// get this from collectionPDA
+
+        // set dynamic space
+        
+        // Validate collection size
+        if collection_size == 0 || collection_size > MAX_COLLECTION_SIZE {
+            return Err(ErrorCode::InvalidCollectionSize.into());
+        }
+
+        // Calculate required space and lamports
+        
+        let num_bytes = (collection_size + 7) / 8;
+        let space = 8 + 32 + 4 + num_bytes as usize;
+        let rent = Rent::get()?;
+        let required_lamports = rent.minimum_balance(space);
+
+         // Check if the payer has enough lamports
+        if ctx.accounts.payer.lamports() < required_lamports {
+            return Err(ErrorCode::InsufficientLamports.into());
+        }
+
+        // Validate PDA derivation
+        let (expected_pda, bump) = Pubkey::find_program_address(
+            &[b"purchases", ctx.accounts.collection_address.key().as_ref()],
+            &ctx.program_id,
+        );
+        if expected_pda != ctx.accounts.pda_purchases.key() {
+            return Err(ErrorCode::InvalidPda.into());
+        }
+
+        // Allocate space
+        anchor_lang::solana_program::program::invoke(
+            &system_instruction::allocate(
+                &ctx.accounts.pda_purchases.key(),
+                space as u64,
+            ),
+            &[
+                ctx.accounts.pda_purchases.to_account_info(),
+                ctx.accounts.system_program.to_account_info(),
+            ],
+        )?;
+
+        // Transfer lamports
+        anchor_lang::solana_program::program::invoke(
+            &system_instruction::transfer(
+                &ctx.accounts.payer.key(),
+                &ctx.accounts.pda_purchases.key(),
+                required_lamports,
+            ),
+            &[
+                ctx.accounts.payer.to_account_info(),
+                ctx.accounts.pda_purchases.to_account_info(),
+                ctx.accounts.system_program.to_account_info(),
+            ],
+        )?;
+        // end set dynamic space
+
+
+
         // Step 1: Mint cNFT using the accounts from ctx
         let payer = &ctx.accounts.payer.to_account_info();
         let tree_config = &ctx.accounts.tree_config.to_account_info();
@@ -82,8 +144,6 @@ pub mod new_test_App {
         // Step 3: Initialize PDA with the new cNFT address
         let pda_data = &mut ctx.accounts.pda_purchases;
         pda_data.owner = cnft_address; // Use the cNFT address as the owner
-        //let num_bytes = (collection_size + 7) / 8; // Round up to the nearest byte
-        let num_bytes = 16;// Temporal, we need to fetch this size from the collection
         pda_data.data = vec![0; num_bytes as usize]; // Initialize the bitmask with zeros
     
         Ok(())
@@ -175,4 +235,24 @@ pub struct AddPurchase<'info> {
 pub struct PDAPurchases {
     pub owner: Pubkey,
     pub data: Vec<u8>,
+}
+
+#[error_code]
+pub enum ErrorCode {
+    #[msg("Insufficient lamports.")]
+    InsufficientLamports,
+    // #[msg("Account already initialized.")]
+    // AccountAlreadyInitialized,
+    #[msg("Invalid PDA derivation.")]
+    InvalidPda,
+    #[msg("Invalid collection size.")]
+    InvalidCollectionSize,
+    // #[msg("Data overflow.")]
+    // DataOverflow,
+    // #[msg("Unauthorized access.")]
+    // Unauthorized,
+    // #[msg("Invalid system program.")]
+    // InvalidSystemProgram,
+    // #[msg("Invalid account owner.")]
+    // InvalidAccountOwner,
 }
