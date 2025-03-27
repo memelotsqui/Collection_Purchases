@@ -730,11 +730,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "collection_price_manager"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+]
+
+[[package]]
 name = "collection_purchases"
 version = "0.1.0"
 dependencies = [
  "anchor-lang",
  "anchor-spl",
+ "collection_price_manager",
  "mpl-bubblegum",
  "mpl-token-metadata",
  "spl-associated-token-account 1.1.3",

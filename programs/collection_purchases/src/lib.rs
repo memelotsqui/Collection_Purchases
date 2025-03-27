@@ -9,6 +9,17 @@ use mpl_bubblegum::utils::get_asset_id;
 use anchor_lang::solana_program::pubkey::Pubkey;
 use anchor_lang::solana_program::{system_instruction, sysvar::Sysvar};
 
+//use collection_price_manager::cpi::accounts::FetchPrices;
+// use collection_price_manager::program::CollectionPriceManager;
+// use collection_price_manager::cpi::fetch_prices;
+
+// use collection_price_manager::cpi::accounts::FetchPrices;
+use collection_price_manager::program::CollectionPriceManager;
+use collection_price_manager::FetchPrices;
+//use collection_price_manager::FetchPrices;
+use collection_price_manager::CollectionPrices;
+// use collection_price_manager::CollectionPrices;
+
 declare_id!("4Cu1DNPbgnDmCMCpBrgGuGhTJMfwoeWJXqPizDNTZesU");
 
 #[program]
@@ -22,7 +33,13 @@ pub mod collection_purchases {
         collection_verified: bool,
     ) -> Result<()> {
 
-        let collection_size = 40;// get this from collectionPDA
+        let cpi_program = ctx.accounts.collection_price_manager_program.to_account_info();
+        let cpi_accounts = FetchPrices {
+            collection_prices: ctx.accounts.collection_prices.to_account_info(),
+            collection_address: ctx.accounts.collection_address.to_account_info(),
+        };
+
+        let collection_size = 40; // get this from collectionPDA
 
         // set dynamic space
         
@@ -209,8 +226,13 @@ pub struct MintAndInitializeCNFT<'info> {
     )]
     pub pda_purchases: Account<'info, PDAPurchases>,
 
+    #[account(mut, seeds = [b"prices", collection_address.key().as_ref()], bump)]
+    pub collection_prices: Account<'info, CollectionPrices>,
+
     /// CHECK: This account is only used for deriving the PDA and is not read or written to.
     pub collection_address: AccountInfo<'info>,
+
+    pub collection_price_manager_program: Program<'info, CollectionPriceManager>,
 }
 
 // Fetch PDA data
