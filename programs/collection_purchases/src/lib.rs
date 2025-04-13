@@ -26,11 +26,6 @@ pub mod collection_purchases {
         collection_verified: bool,
     ) -> Result<()> {
 
-        // let cpi_program = ctx.accounts.collection_price_manager_program.to_account_info();
-        // let cpi_accounts = FetchPrices {
-        //     collection_prices: ctx.accounts.collection_prices.clone(),
-        //     collection_address: ctx.accounts.collection_address.to_account_info(),
-        // };
 
         // Get Price size directly from collection prices pda
         let collection_size = ctx.accounts.collection_prices.size; // get this from collectionPDA
@@ -54,53 +49,9 @@ pub mod collection_purchases {
             return Err(ErrorCode::InsufficientLamports.into());
         }
 
-        // Validate PDA derivation
-        let (expected_pda, bump) = Pubkey::find_program_address(
-            &[b"purchases", ctx.accounts.collection_address.key().as_ref()],
-            &ctx.program_id,
-        );
-        if expected_pda != ctx.accounts.pda_purchases.key() {
-            return Err(ErrorCode::InvalidPda.into());
-        }
+        
 
-        // Step 1: Transfer lamports
-        anchor_lang::solana_program::program::invoke(
-            &system_instruction::transfer(
-                &ctx.accounts.payer.key(),
-                &ctx.accounts.pda_purchases.key(),
-                required_lamports,
-            ),
-            &[
-                ctx.accounts.payer.to_account_info(),
-                ctx.accounts.pda_purchases.to_account_info(),
-                ctx.accounts.system_program.to_account_info(),
-            ],
-        )?;
-
-        // Step 2: Allocate space
-        anchor_lang::solana_program::program::invoke(
-            &system_instruction::allocate(
-                &ctx.accounts.pda_purchases.key(),
-                space as u64,
-            ),
-            &[
-                ctx.accounts.pda_purchases.to_account_info(),
-                ctx.accounts.system_program.to_account_info(),
-            ],
-        )?;
-
-        // ✅ Step 3: Assign program ownership
-        anchor_lang::solana_program::program::invoke(
-            &system_instruction::assign(
-                &ctx.accounts.pda_purchases.key(),
-                &ctx.program_id,
-            ),
-            &[
-                ctx.accounts.pda_purchases.to_account_info(),
-                ctx.accounts.system_program.to_account_info(),
-            ],
-        )?;
-        // end set dynamic space and initialization
+        
 
 
 
@@ -163,10 +114,59 @@ pub mod collection_purchases {
         let merkle_tree_key = merkle_tree.key();
         let leaf_index = 0; // Replace with the actual leaf index of the newly minted cNFT
         let cnft_address = get_asset_id(&merkle_tree_key, leaf_index);
+
+        // Validate PDA derivation
+        let (expected_pda, bump) = Pubkey::find_program_address(
+            &[b"purchases", cnft_address.as_ref()],
+            &ctx.program_id,
+        );
+        
+        if expected_pda != ctx.accounts.pda_purchases.key() {
+            return Err(ErrorCode::InvalidPda.into());
+        }
+
+        // Step 1: Transfer lamports
+        anchor_lang::solana_program::program::invoke(
+            &system_instruction::transfer(
+                &ctx.accounts.payer.key(),
+                &ctx.accounts.pda_purchases.key(),
+                required_lamports,
+            ),
+            &[
+                ctx.accounts.payer.to_account_info(),
+                ctx.accounts.pda_purchases.to_account_info(),
+                ctx.accounts.system_program.to_account_info(),
+            ],
+        )?;
+
+        // Step 2: Allocate space
+        anchor_lang::solana_program::program::invoke(
+            &system_instruction::allocate(
+                &ctx.accounts.pda_purchases.key(),
+                space as u64,
+            ),
+            &[
+                ctx.accounts.pda_purchases.to_account_info(),
+                ctx.accounts.system_program.to_account_info(),
+            ],
+        )?;
+
+        // ✅ Step 3: Assign program ownership
+        anchor_lang::solana_program::program::invoke(
+            &system_instruction::assign(
+                &ctx.accounts.pda_purchases.key(),
+                &ctx.program_id,
+            ),
+            &[
+                ctx.accounts.pda_purchases.to_account_info(),
+                ctx.accounts.system_program.to_account_info(),
+            ],
+        )?;
+        // end set dynamic space and initialization
     
-        // Step 3: Initialize PDA with the new cNFT address
+        // 3: Initialize PDA with the new cNFT address
         let pda_data = &mut ctx.accounts.pda_purchases;
-        pda_data.owner = cnft_address; // Use the cNFT address as the owner
+        pda_data.owner = ctx.accounts.payer.key(); // Use the payer as the owner of the cnft
         pda_data.data = vec![0; num_bytes as usize]; // Initialize the bitmask with zeros
     
         Ok(())
@@ -232,7 +232,7 @@ pub struct MintAndInitializeCNFT<'info> {
 
     /// CHECK: Will be manually created and assigned in instruction
     #[account(mut)]
-    pub pda_purchases: AccountInfo<'info>,
+    pub pda_purchases: Account<'info, PDAPurchases>,
 
     #[account(mut, seeds = [b"prices", collection_address.key().as_ref()], bump)]
     pub collection_prices: Account<'info, CollectionPrices>,

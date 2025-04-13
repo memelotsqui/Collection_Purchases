@@ -734,6 +734,8 @@ name = "collection_price_manager"
 version = "0.1.0"
 dependencies = [
  "anchor-lang",
+ "mpl-bubblegum",
+ "spl-noop",
 ]
 
 [[package]]
