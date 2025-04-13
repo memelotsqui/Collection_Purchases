@@ -1,5 +1,5 @@
 #![allow(unexpected_cfgs)]
-const MAX_COLLECTION_SIZE: i32 = 2000;
+const MAX_COLLECTION_SIZE: u16 = 2000;
 use anchor_lang::prelude::*;
 use mpl_bubblegum::types::{MetadataArgs, TokenProgramVersion, TokenStandard, Creator, Collection};
 use mpl_bubblegum::instructions::MintV1InstructionArgs;
@@ -9,16 +9,9 @@ use mpl_bubblegum::utils::get_asset_id;
 use anchor_lang::solana_program::pubkey::Pubkey;
 use anchor_lang::solana_program::{system_instruction, sysvar::Sysvar};
 
-//use collection_price_manager::cpi::accounts::FetchPrices;
-// use collection_price_manager::program::CollectionPriceManager;
-// use collection_price_manager::cpi::fetch_prices;
-
-// use collection_price_manager::cpi::accounts::FetchPrices;
 use collection_price_manager::program::CollectionPriceManager;
-use collection_price_manager::FetchPrices;
 //use collection_price_manager::FetchPrices;
 use collection_price_manager::CollectionPrices;
-// use collection_price_manager::CollectionPrices;
 
 declare_id!("4Cu1DNPbgnDmCMCpBrgGuGhTJMfwoeWJXqPizDNTZesU");
 
@@ -33,13 +26,14 @@ pub mod collection_purchases {
         collection_verified: bool,
     ) -> Result<()> {
 
-        let cpi_program = ctx.accounts.collection_price_manager_program.to_account_info();
-        let cpi_accounts = FetchPrices {
-            collection_prices: ctx.accounts.collection_prices.to_account_info(),
-            collection_address: ctx.accounts.collection_address.to_account_info(),
-        };
+        // let cpi_program = ctx.accounts.collection_price_manager_program.to_account_info();
+        // let cpi_accounts = FetchPrices {
+        //     collection_prices: ctx.accounts.collection_prices.clone(),
+        //     collection_address: ctx.accounts.collection_address.to_account_info(),
+        // };
 
-        let collection_size = 40; // get this from collectionPDA
+        // Get Price size directly from collection prices pda
+        let collection_size = ctx.accounts.collection_prices.size; // get this from collectionPDA
 
         // set dynamic space
         
@@ -69,19 +63,7 @@ pub mod collection_purchases {
             return Err(ErrorCode::InvalidPda.into());
         }
 
-        // Allocate space
-        anchor_lang::solana_program::program::invoke(
-            &system_instruction::allocate(
-                &ctx.accounts.pda_purchases.key(),
-                space as u64,
-            ),
-            &[
-                ctx.accounts.pda_purchases.to_account_info(),
-                ctx.accounts.system_program.to_account_info(),
-            ],
-        )?;
-
-        // Transfer lamports
+        // Step 1: Transfer lamports
         anchor_lang::solana_program::program::invoke(
             &system_instruction::transfer(
                 &ctx.accounts.payer.key(),
@@ -94,7 +76,31 @@ pub mod collection_purchases {
                 ctx.accounts.system_program.to_account_info(),
             ],
         )?;
-        // end set dynamic space
+
+        // Step 2: Allocate space
+        anchor_lang::solana_program::program::invoke(
+            &system_instruction::allocate(
+                &ctx.accounts.pda_purchases.key(),
+                space as u64,
+            ),
+            &[
+                ctx.accounts.pda_purchases.to_account_info(),
+                ctx.accounts.system_program.to_account_info(),
+            ],
+        )?;
+
+        // ✅ Step 3: Assign program ownership
+        anchor_lang::solana_program::program::invoke(
+            &system_instruction::assign(
+                &ctx.accounts.pda_purchases.key(),
+                &ctx.program_id,
+            ),
+            &[
+                ctx.accounts.pda_purchases.to_account_info(),
+                ctx.accounts.system_program.to_account_info(),
+            ],
+        )?;
+        // end set dynamic space and initialization
 
 
 
@@ -216,15 +222,17 @@ pub struct MintAndInitializeCNFT<'info> {
     #[account(address = mpl_bubblegum::ID)]
     pub bubblegum_program: AccountInfo<'info>,
 
-    // PDA Initialization
-    #[account(
-        init,
-        payer = payer,
-        space = 8 + 32 + 4 + 100,//num_bytes,
-        seeds = [b"purchases", leaf_owner.key().as_ref()],
-        bump
-    )]
-    pub pda_purchases: Account<'info, PDAPurchases>,
+    // // PDA Initialization
+    // #[account(
+    //     mut,
+    //     seeds = [b"purchases", leaf_owner.key().as_ref()],
+    //     bump
+    // )]
+    // pub pda_purchases: Account<'info, PDAPurchases>,
+
+    /// CHECK: Will be manually created and assigned in instruction
+    #[account(mut)]
+    pub pda_purchases: AccountInfo<'info>,
 
     #[account(mut, seeds = [b"prices", collection_address.key().as_ref()], bump)]
     pub collection_prices: Account<'info, CollectionPrices>,
