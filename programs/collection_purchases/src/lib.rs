@@ -9,6 +9,8 @@ use mpl_bubblegum::utils::get_asset_id;
 use anchor_lang::solana_program::pubkey::Pubkey;
 use anchor_lang::solana_program::{system_instruction, sysvar::Sysvar};
 
+use collection_price_manager::MerkleTreeIndex;
+
 use collection_price_manager::program::CollectionPriceManager;
 //use collection_price_manager::FetchPrices;
 use collection_price_manager::CollectionPrices;
@@ -19,41 +21,59 @@ declare_id!("4Cu1DNPbgnDmCMCpBrgGuGhTJMfwoeWJXqPizDNTZesU");
 pub mod collection_purchases {
     use super::*;
     
+    
 
     pub fn mint_and_initialize_cnft(
         ctx: Context<MintAndInitializeCNFT>,
-        collection_key: Pubkey,
-        collection_verified: bool,
+        purchase_indices: Vec<u16>,
     ) -> Result<()> {
-
+        // Check if user already owns a cNFT for this collection
+        let (existing_pda, _) = Pubkey::find_program_address(
+            &[b"purchases", ctx.accounts.payer.key().as_ref()],
+            &ctx.program_id,
+        );
+        
+        if existing_pda != ctx.accounts.pda_purchases.key() {
+            return Err(ErrorCode::UserAlreadyOwnsCNFT.into());
+        }
 
         // Get Price size directly from collection prices pda
         let collection_size = ctx.accounts.collection_prices.size; // get this from collectionPDA
 
-        // set dynamic space
-        
         // Validate collection size
         if collection_size == 0 || collection_size > MAX_COLLECTION_SIZE {
             return Err(ErrorCode::InvalidCollectionSize.into());
         }
 
+        // Validate purchase indices
+        for &index in &purchase_indices {
+            if index >= collection_size {
+                return Err(ErrorCode::InvalidPurchaseIndex.into());
+            }
+        }
+
+        // Calculate total price
+        let mut total_price: u64 = 0;
+        for &index in &purchase_indices {
+            total_price = total_price.checked_add(ctx.accounts.collection_prices.prices[index as usize])
+                .ok_or(ErrorCode::PriceOverflow)?;
+        }
+
+        // Check if payer has enough lamports
+        if ctx.accounts.payer.lamports() < total_price {
+            return Err(ErrorCode::InsufficientLamports.into());
+        }
+
         // Calculate required space and lamports
-        
         let num_bytes = (collection_size + 7) / 8;
         let space = 8 + 32 + 4 + num_bytes as usize;
         let rent = Rent::get()?;
         let required_lamports = rent.minimum_balance(space);
 
-         // Check if the payer has enough lamports
-        if ctx.accounts.payer.lamports() < required_lamports {
+        // Check if the payer has enough lamports for both rent and purchase
+        if ctx.accounts.payer.lamports() < required_lamports + total_price {
             return Err(ErrorCode::InsufficientLamports.into());
         }
-
-        
-
-        
-
-
 
         // Step 1: Mint cNFT using the accounts from ctx
         let payer = &ctx.accounts.payer.to_account_info();
@@ -65,6 +85,7 @@ pub mod collection_purchases {
         let log_wrapper = &ctx.accounts.log_wrapper.to_account_info();
         let compression_program = &ctx.accounts.compression_program.to_account_info();
         let bubblegum_program = &ctx.accounts.bubblegum_program.to_account_info();
+        let mint_authority = &ctx.accounts.mint_authority.to_account_info();
     
         // Define metadata for the cNFT
         let metadata = MetadataArgs {
@@ -74,7 +95,7 @@ pub mod collection_purchases {
             seller_fee_basis_points: 500, // 5% royalty
             creators: vec![
                 Creator {
-                    address: ctx.accounts.payer.key(),
+                    address: ctx.accounts.mint_authority.key(), // Use mint authority as creator
                     verified: true,
                     share: 100,
                 },
@@ -84,8 +105,8 @@ pub mod collection_purchases {
             edition_nonce: Some(1),
             token_standard: Some(TokenStandard::NonFungible),
             collection: Some(Collection {
-                verified: collection_verified,
-                key: collection_key,
+                verified: true, // Always set to true since we're using the collection's mint authority
+                key: ctx.accounts.collection_prices.collection_address, // Use collection address from PDA
             }),
             uses: None,
             token_program_version: TokenProgramVersion::Original,
@@ -103,17 +124,26 @@ pub mod collection_purchases {
                 payer,
                 system_program,
                 tree_config,
-                tree_creator_or_delegate: leaf_delegate,
+                tree_creator_or_delegate: mint_authority, // Use mint authority as tree creator
             },
             MintV1InstructionArgs { metadata },
         );
     
-        cpi_mint.invoke()?;
+        // Sign with the mint authority PDA
+        let signer_seeds = &[
+            b"mint_authority",
+            ctx.accounts.collection_prices.collection_address.as_ref(),
+            &[ctx.bumps.mint_authority],
+        ];
+        cpi_mint.invoke_signed(&[signer_seeds])?;
     
         // Step 2: Derive the cNFT address
-        let merkle_tree_key = merkle_tree.key();
-        let leaf_index = 0; // Replace with the actual leaf index of the newly minted cNFT
+        let merkle_tree_key = ctx.accounts.collection_prices.merkle_tree;
+        let leaf_index = ctx.accounts.merkle_tree_index.current_index;
         let cnft_address = get_asset_id(&merkle_tree_key, leaf_index);
+
+        // Increment the leaf index for the next mint
+        ctx.accounts.merkle_tree_index.current_index += 1;
 
         // Validate PDA derivation
         let (expected_pda, bump) = Pubkey::find_program_address(
@@ -164,11 +194,18 @@ pub mod collection_purchases {
         )?;
         // end set dynamic space and initialization
     
-        // 3: Initialize PDA with the new cNFT address
+        // 3: Initialize PDA with the purchased indices
         let pda_data = &mut ctx.accounts.pda_purchases;
-        pda_data.owner = ctx.accounts.payer.key(); // Use the payer as the owner of the cnft
-        pda_data.data = vec![0; num_bytes as usize]; // Initialize the bitmask with zeros
-    
+        pda_data.owner = ctx.accounts.payer.key();
+        pda_data.data = vec![0; num_bytes as usize]; // Initialize with all zeros
+        
+        // Set the purchased indices to true (1)
+        for &index in &purchase_indices {
+            let byte_index = index as usize / 8;
+            let bit_index = index as usize % 8;
+            pda_data.data[byte_index] |= 1 << bit_index;
+        }
+
         Ok(())
     }
     
@@ -180,12 +217,49 @@ pub mod collection_purchases {
     }
 
     // New function: Add a purchase (modify PDA data)
-    pub fn add_purchase(ctx: Context<AddPurchase>, data: Vec<u8>) -> Result<()> {
-        let pda_data = &mut ctx.accounts.pda_purchases;
+    pub fn add_purchase(ctx: Context<AddPurchase>, purchase_indices: Vec<u16>) -> Result<()> {
+        // Get collection size
+        let collection_size = ctx.accounts.collection_prices.size;
 
-        // Ensure data does not exceed storage limit (100 bytes)
-        let max_length = pda_data.data.len().min(data.len());
-        pda_data.data[..max_length].copy_from_slice(&data[..max_length]);
+        // Validate purchase indices
+        for &index in &purchase_indices {
+            if index >= collection_size {
+                return Err(ErrorCode::InvalidPurchaseIndex.into());
+            }
+        }
+
+        // Calculate total price
+        let mut total_price: u64 = 0;
+        for &index in &purchase_indices {
+            total_price = total_price.checked_add(ctx.accounts.collection_prices.prices[index as usize])
+                .ok_or(ErrorCode::PriceOverflow)?;
+        }
+
+        // Check if user has enough lamports
+        if ctx.accounts.user.lamports() < total_price {
+            return Err(ErrorCode::InsufficientLamports.into());
+        }
+
+        // Transfer lamports from user to PDA
+        anchor_lang::solana_program::program::invoke(
+            &system_instruction::transfer(
+                &ctx.accounts.user.key(),
+                &ctx.accounts.pda_purchases.key(),
+                total_price,
+            ),
+            &[
+                ctx.accounts.user.to_account_info(),
+                ctx.accounts.pda_purchases.to_account_info(),
+                ctx.accounts.system_program.to_account_info(),
+            ],
+        )?;
+
+        // Update PDA data with new purchases
+        for &index in &purchase_indices {
+            let byte_index = index as usize / 8;
+            let bit_index = index as usize % 8;
+            ctx.accounts.pda_purchases.data[byte_index] |= 1 << bit_index;
+        }
 
         Ok(())
     }
@@ -222,20 +296,19 @@ pub struct MintAndInitializeCNFT<'info> {
     #[account(address = mpl_bubblegum::ID)]
     pub bubblegum_program: AccountInfo<'info>,
 
-    // // PDA Initialization
-    // #[account(
-    //     mut,
-    //     seeds = [b"purchases", leaf_owner.key().as_ref()],
-    //     bump
-    // )]
-    // pub pda_purchases: Account<'info, PDAPurchases>,
-
     /// CHECK: Will be manually created and assigned in instruction
     #[account(mut)]
     pub pda_purchases: Account<'info, PDAPurchases>,
 
     #[account(mut, seeds = [b"prices", collection_address.key().as_ref()], bump)]
     pub collection_prices: Account<'info, CollectionPrices>,
+
+    #[account(mut, seeds = [b"tree_index", collection_prices.merkle_tree.as_ref()], bump)]
+    pub merkle_tree_index: Account<'info, MerkleTreeIndex>,
+
+    /// CHECK: PDA signer for minting, derived from collection address
+    #[account(seeds = [b"mint_authority", collection_prices.collection_address.as_ref()], bump)]
+    pub mint_authority: AccountInfo<'info>,
 
     /// CHECK: This account is only used for deriving the PDA and is not read or written to.
     pub collection_address: AccountInfo<'info>,
@@ -253,11 +326,24 @@ pub struct FetchData<'info> {
 // New: Modify PDA data (Add Purchase)
 #[derive(Accounts)]
 pub struct AddPurchase<'info> {
-    #[account(mut, seeds = [b"purchases", pda_purchases.owner.as_ref()], bump)]
+    /// CHECK: This account is only used for deriving the PDA and is not read or written to.
+    pub cnft_address: AccountInfo<'info>,
+
+    #[account(mut, seeds = [b"purchases", cnft_address.key().as_ref()], bump)]
     pub pda_purchases: Account<'info, PDAPurchases>,
 
     #[account(mut)]
     pub user: Signer<'info>,
+
+    #[account(mut, seeds = [b"prices", collection_address.key().as_ref()], bump)]
+    pub collection_prices: Account<'info, CollectionPrices>,
+
+    /// CHECK: This account is only used for deriving the PDA and is not read or written to.
+    pub collection_address: AccountInfo<'info>,
+
+    pub collection_price_manager_program: Program<'info, CollectionPriceManager>,
+
+    pub system_program: Program<'info, System>,
 }
 
 // PDA storage structure
@@ -271,18 +357,14 @@ pub struct PDAPurchases {
 pub enum ErrorCode {
     #[msg("Insufficient lamports.")]
     InsufficientLamports,
-    // #[msg("Account already initialized.")]
-    // AccountAlreadyInitialized,
     #[msg("Invalid PDA derivation.")]
     InvalidPda,
     #[msg("Invalid collection size.")]
     InvalidCollectionSize,
-    // #[msg("Data overflow.")]
-    // DataOverflow,
-    // #[msg("Unauthorized access.")]
-    // Unauthorized,
-    // #[msg("Invalid system program.")]
-    // InvalidSystemProgram,
-    // #[msg("Invalid account owner.")]
-    // InvalidAccountOwner,
+    #[msg("Invalid purchase index.")]
+    InvalidPurchaseIndex,
+    #[msg("Price overflow.")]
+    PriceOverflow,
+    #[msg("User already owns a cNFT for this collection.")]
+    UserAlreadyOwnsCNFT,
 }
