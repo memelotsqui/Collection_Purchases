@@ -1,5 +1,7 @@
 #![allow(unexpected_cfgs)]
 const MAX_COLLECTION_SIZE: u16 = 2000;
+const ROYALTY_WALLET: Pubkey = pubkey!("3hVvk2c8NKHpfSeb5qcXQCUcVUqeu7EjB4YGP4SQw2so"); // Replace with actual address
+
 use anchor_lang::prelude::*;
 use mpl_bubblegum::types::{MetadataArgs, TokenProgramVersion, TokenStandard, Creator, Collection};
 use mpl_bubblegum::instructions::MintV1InstructionArgs;
@@ -17,6 +19,8 @@ use collection_price_manager::CollectionPrices;
 
 declare_id!("4Cu1DNPbgnDmCMCpBrgGuGhTJMfwoeWJXqPizDNTZesU");
 
+
+
 #[program]
 pub mod collection_purchases {
     use super::*;
@@ -27,9 +31,13 @@ pub mod collection_purchases {
         ctx: Context<MintAndInitializeCNFT>,
         purchase_indices: Vec<u16>,
     ) -> Result<()> {
-        // Check if user already owns a cNFT for this collection
+        // Check if user already owns a cNFT for this specific collection
         let (existing_pda, _) = Pubkey::find_program_address(
-            &[b"purchases", ctx.accounts.payer.key().as_ref()],
+            &[
+                b"purchases",
+                ctx.accounts.payer.key().as_ref(),
+                ctx.accounts.collection_prices.collection_address.as_ref()
+            ],
             &ctx.program_id,
         );
         
@@ -52,17 +60,51 @@ pub mod collection_purchases {
             }
         }
 
-        // Calculate total price
+        // Calculate total price and royalty
         let mut total_price: u64 = 0;
         for &index in &purchase_indices {
             total_price = total_price.checked_add(ctx.accounts.collection_prices.prices[index as usize])
                 .ok_or(ErrorCode::PriceOverflow)?;
         }
 
-        // Check if payer has enough lamports
-        if ctx.accounts.payer.lamports() < total_price {
+        // Calculate royalty (2.5% of total price)
+        let royalty = total_price.checked_mul(25)
+            .ok_or(ErrorCode::PriceOverflow)?
+            .checked_div(1000)
+            .ok_or(ErrorCode::PriceOverflow)?;
+
+        // Check if payer has enough lamports for both price and royalty
+        if ctx.accounts.payer.lamports() < total_price + royalty {
             return Err(ErrorCode::InsufficientLamports.into());
         }
+
+        // Transfer royalty to royalty wallet
+        anchor_lang::solana_program::program::invoke(
+            &system_instruction::transfer(
+                &ctx.accounts.payer.key(),
+                &ctx.accounts.royalty_wallet.key(),
+                royalty,
+            ),
+            &[
+                ctx.accounts.payer.to_account_info(),
+                ctx.accounts.royalty_wallet.to_account_info(),
+                ctx.accounts.system_program.to_account_info(),
+            ],
+        )?;
+
+        // Transfer remaining amount to PDA
+        anchor_lang::solana_program::program::invoke(
+            &system_instruction::transfer(
+                &ctx.accounts.payer.key(),
+                &ctx.accounts.pda_purchases.key(),
+                total_price,
+            ),
+            &[
+                ctx.accounts.payer.to_account_info(),
+                ctx.accounts.pda_purchases.to_account_info(),
+                ctx.accounts.system_program.to_account_info(),
+            ],
+        )?;
 
         // Calculate required space and lamports
         let num_bytes = (collection_size + 7) / 8;
@@ -155,21 +197,7 @@ pub mod collection_purchases {
             return Err(ErrorCode::InvalidPda.into());
         }
 
-        // Step 1: Transfer lamports
-        anchor_lang::solana_program::program::invoke(
-            &system_instruction::transfer(
-                &ctx.accounts.payer.key(),
-                &ctx.accounts.pda_purchases.key(),
-                required_lamports,
-            ),
-            &[
-                ctx.accounts.payer.to_account_info(),
-                ctx.accounts.pda_purchases.to_account_info(),
-                ctx.accounts.system_program.to_account_info(),
-            ],
-        )?;
-
-        // Step 2: Allocate space
+        // Step 1: Allocate space
         anchor_lang::solana_program::program::invoke(
             &system_instruction::allocate(
                 &ctx.accounts.pda_purchases.key(),
@@ -228,19 +256,39 @@ pub mod collection_purchases {
             }
         }
 
-        // Calculate total price
+        // Calculate total price and royalty
         let mut total_price: u64 = 0;
         for &index in &purchase_indices {
             total_price = total_price.checked_add(ctx.accounts.collection_prices.prices[index as usize])
                 .ok_or(ErrorCode::PriceOverflow)?;
         }
 
-        // Check if user has enough lamports
-        if ctx.accounts.user.lamports() < total_price {
+        // Calculate royalty (2.5% of total price)
+        let royalty = total_price.checked_mul(25)
+            .ok_or(ErrorCode::PriceOverflow)?
+            .checked_div(1000)
+            .ok_or(ErrorCode::PriceOverflow)?;
+
+        // Check if user has enough lamports for both price and royalty
+        if ctx.accounts.user.lamports() < total_price + royalty {
             return Err(ErrorCode::InsufficientLamports.into());
         }
 
-        // Transfer lamports from user to PDA
+        // Transfer royalty to royalty wallet
+        anchor_lang::solana_program::program::invoke(
+            &system_instruction::transfer(
+                &ctx.accounts.user.key(),
+                &ctx.accounts.royalty_wallet.key(),
+                royalty,
+            ),
+            &[
+                ctx.accounts.user.to_account_info(),
+                ctx.accounts.royalty_wallet.to_account_info(),
+                ctx.accounts.system_program.to_account_info(),
+            ],
+        )?;
+
+        // Transfer remaining amount to PDA
         anchor_lang::solana_program::program::invoke(
             &system_instruction::transfer(
                 &ctx.accounts.user.key(),
@@ -314,6 +362,13 @@ pub struct MintAndInitializeCNFT<'info> {
     pub collection_address: AccountInfo<'info>,
 
     pub collection_price_manager_program: Program<'info, CollectionPriceManager>,
+
+    /// CHECK: Royalty wallet that receives 2.5% of purchases
+    #[account(
+        mut,
+        address = ROYALTY_WALLET @ ErrorCode::InvalidRoyaltyWallet
+    )]
+    pub royalty_wallet: AccountInfo<'info>,
 }
 
 // Fetch PDA data
@@ -329,7 +384,11 @@ pub struct AddPurchase<'info> {
     /// CHECK: This account is only used for deriving the PDA and is not read or written to.
     pub cnft_address: AccountInfo<'info>,
 
-    #[account(mut, seeds = [b"purchases", cnft_address.key().as_ref()], bump)]
+    #[account(mut, seeds = [
+        b"purchases",
+        cnft_address.key().as_ref(),
+        collection_prices.collection_address.as_ref()
+    ], bump)]
     pub pda_purchases: Account<'info, PDAPurchases>,
 
     #[account(mut)]
@@ -344,6 +403,13 @@ pub struct AddPurchase<'info> {
     pub collection_price_manager_program: Program<'info, CollectionPriceManager>,
 
     pub system_program: Program<'info, System>,
+
+    /// CHECK: Royalty wallet that receives 2.5% of purchases
+    #[account(
+        mut,
+        address = ROYALTY_WALLET @ ErrorCode::InvalidRoyaltyWallet
+    )]
+    pub royalty_wallet: AccountInfo<'info>,
 }
 
 // PDA storage structure
@@ -367,4 +433,6 @@ pub enum ErrorCode {
     PriceOverflow,
     #[msg("User already owns a cNFT for this collection.")]
     UserAlreadyOwnsCNFT,
+    #[msg("Invalid royalty wallet address.")]
+    InvalidRoyaltyWallet,
 }
